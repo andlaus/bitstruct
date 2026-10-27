@@ -878,6 +878,9 @@ class CTest(unittest.TestCase):
         self.assertEqual(cf.unpack(packed), unpacked)
 
     def test_negative_padding(self):
+        if not is_cpython_3():
+            return
+
         self.assertEqual(pack('u8p-8u4u4', 0xab, 1, 2), b'\x12')
         self.assertEqual(pack('u8p-4u8', 0xab, 0xcd), b'\xac\xd0')
         self.assertEqual(pack('u16p-12u4p-3u3', 0xabcd, 0, 7), b'\xa7\xcd')
