@@ -170,7 +170,7 @@ def _parse_format(fmt, names, text_encoding, text_errors):
     else:
         byte_order = ''
 
-    parsed_infos = re.findall(r'([<>]?)([a-zA-Z])(\d+)(\s*)', fmt)
+    parsed_infos = re.findall(r'([<>]?)([a-zA-Z])(-?\d+)(\s*)', fmt)
 
     if ''.join([''.join(info) for info in parsed_infos]) != fmt:
         raise Error(f"bad format '{fmt + byte_order}'")
@@ -188,7 +188,7 @@ def _parse_format(fmt, names, text_encoding, text_errors):
         type_ = parsed_info[1]
         size = int(parsed_info[2])
 
-        if size == 0:
+        if size == 0 or (size < 0 and type_ not in 'pP'):
             raise Error(f"bad format '{fmt + byte_order}'")
 
         if names is None:
@@ -251,7 +251,18 @@ class _CompiledFormat:
         infos, byte_order = _parse_format(fmt, names, text_encoding, text_errors)
         self._infos = infos
         self._byte_order = byte_order
-        self._number_of_bits_to_unpack = sum([info.size for info in infos])
+        self._number_of_bits_to_unpack = 0
+
+        offset = 0
+        for info in infos:
+            offset += info.size
+
+            if offset < 0:
+                raise Error(f"negative padding points to before start of data in '{fmt}'")
+
+            self._number_of_bits_to_unpack = max(
+                self._number_of_bits_to_unpack,
+                offset)
 
     def pack_value(self, info, value, bits):
         value_bits = info.pack(value)
@@ -277,12 +288,19 @@ class _CompiledFormat:
 
     def pack_any(self, values):
         bits = ''
+        offset = 0
 
         for info in self._infos:
             if isinstance(info, _Padding):
-                bits += info.pack()
+                value_bits = '' if info.size < 0 else info.pack()
             else:
-                bits = self.pack_value(info, values[info.name], bits)
+                value_bits = self.pack_value(
+                    info,
+                    values[info.name],
+                    bits[:offset])[offset:]
+
+            bits = bits[:offset] + value_bits + bits[offset + len(value_bits):]
+            offset += info.size
 
         # Padding of last byte.
         tail = len(bits) % 8
@@ -343,15 +361,24 @@ class _CompiledFormat:
         fill_padding = kwargs.get('fill_padding', True)
         buf_bits = _pack_bytearray(8 * len(buf), buf)
         bits = buf_bits[0:offset]
+        pos = offset
 
         for info in self._infos:
             if isinstance(info, _Padding):
-                if fill_padding:
-                    bits += info.pack()
+                if info.size < 0:
+                    value_bits = ''
+                elif fill_padding:
+                    value_bits = info.pack()
                 else:
-                    bits += buf_bits[len(bits):len(bits) + info.size]
+                    value_bits = buf_bits[pos:pos + info.size]
             else:
-                bits = self.pack_value(info, data[info.name], bits)
+                value_bits = self.pack_value(
+                    info,
+                    data[info.name],
+                    bits[:pos])[pos:]
+
+            bits = bits[:pos] + value_bits + bits[pos + len(value_bits):]
+            pos += info.size
 
         bits += buf_bits[len(bits):]
 
@@ -505,6 +532,12 @@ def pack(fmt, *args):
     - ``P`` -- padding with ones, ignore
 
     Length is the number of bits to pack the value into.
+
+    Padding may have a negative length (``p-8``), which moves back
+    that many bits. Following fields then overlap the previous
+    bits; when packing they overwrite them. The size of the format is
+    the furthest bit position reached. Moving before the start of the
+    format is an error.
 
     Example format string with default bit and byte ordering:
     ``'u1u3p7s16'``

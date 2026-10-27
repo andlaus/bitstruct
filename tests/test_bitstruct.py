@@ -497,6 +497,28 @@ class BitStructTest(unittest.TestCase):
         self.assertEqual(cf.unpack(b''), ())
         self.assertEqual(cf.unpack(b'\x00'), ())
 
+    def test_negative_padding(self):
+        self.assertEqual(pack('u8p-8u4u4', 0xab, 1, 2), b'\x12')
+        self.assertEqual(pack('u8p-4u8', 0xab, 0xcd), b'\xac\xd0')
+        self.assertEqual(pack('u16p-12u4p-3u3', 0xabcd, 0, 7), b'\xa7\xcd')
+        self.assertEqual(unpack('u8p-8u4u4', b'\xab'), (0xab, 0xa, 0xb))
+        self.assertEqual(unpack('u8P-4u8', b'\xab\xcd'), (0xab, 0xbc))
+        self.assertEqual(calcsize('u8p-8u4'), 8)
+        self.assertEqual(pack_dict('u8p-8u4', ['a', 'b'], {'a': 0x12, 'b': 0xf}),
+                         b'\xf2')
+        self.assertEqual(unpack_dict('u8p-8u4', ['a', 'b'], b'\xab'),
+                         {'a': 0xab, 'b': 0xa})
+
+        packed = bytearray(b'\xff\xff\xff')
+        pack_into('u8p-8u4', packed, 4, 0x12, 0xf)
+        self.assertEqual(packed, b'\xff\x2f\xff')
+
+        with self.assertRaises(Exception):
+            pack('u8p-9', 1)
+
+        with self.assertRaises(Exception):
+            pack('u8s-8', 1)
+
     def test_pack_into(self):
         """Pack values into a buffer.
 

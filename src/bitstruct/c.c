@@ -21,6 +21,13 @@ struct field_info_t {
     pack_field_t pack;
     unpack_field_t unpack;
     int number_of_bits;
+    int start_bit;
+
+    /* The maximum start bit of any field before and including the current
+       one. If there are no overlapping fields (i.e., no negative
+       padding), this is identical to start_bit */
+    int extent_before;
+
     bool is_padding;
     union {
         struct {
@@ -35,6 +42,7 @@ struct field_info_t {
 
 struct info_t {
     int number_of_bits;
+    bool has_overlap;
     int number_of_fields;
     int number_of_non_padding_fields;
     struct field_info_t fields[1];
@@ -848,13 +856,21 @@ const char *parse_field(const char *format_p,
                         int *kind_p,
                         int *number_of_bits_p)
 {
+    bool is_negative;
+
     while (isspace(*format_p)) {
         format_p++;
     }
 
     *kind_p = *format_p;
     *number_of_bits_p = 0;
+    is_negative = false;
     format_p++;
+
+    if ((*format_p == '-') && ((*kind_p == 'p') || (*kind_p == 'P'))) {
+        is_negative = true;
+        format_p++;
+    }
 
     while (isdigit(*format_p)) {
         if (*number_of_bits_p > (INT_MAX / 100)) {
@@ -871,6 +887,8 @@ const char *parse_field(const char *format_p,
     if (*number_of_bits_p == 0) {
         PyErr_SetString(PyExc_ValueError, "Field of size 0.");
         format_p = NULL;
+    } else if (is_negative) {
+        *number_of_bits_p = -*number_of_bits_p;
     }
 
     return (format_p);
@@ -886,6 +904,8 @@ static struct info_t *parse_format(PyObject *format_obj_p)
     int number_of_bits;
     int number_of_padding_fields;
     int res;
+    int offset;
+    int extent;
 
     format_p = PyUnicode_AsUTF8(format_obj_p);
 
@@ -904,6 +924,9 @@ static struct info_t *parse_format(PyObject *format_obj_p)
     }
 
     info_p->number_of_bits = 0;
+    info_p->has_overlap = false;
+    offset = 0;
+    extent = 0;
     info_p->number_of_fields = number_of_fields;
     info_p->number_of_non_padding_fields = (
         number_of_fields - number_of_padding_fields);
@@ -925,17 +948,96 @@ static struct info_t *parse_format(PyObject *format_obj_p)
             return (NULL);
         }
 
-        if (number_of_bits > (INT_MAX - info_p->number_of_bits)) {
+        if (number_of_bits > (INT_MAX - offset)) {
             PyErr_SetString(PyExc_ValueError, "Format too long.");
             PyMem_RawFree(info_p);
 
             return (NULL);
         }
 
-        info_p->number_of_bits += number_of_bits;
+        info_p->fields[i].start_bit = offset;
+        info_p->fields[i].extent_before = extent;
+
+        if (offset < extent) {
+            info_p->has_overlap = true;
+        }
+
+        offset += number_of_bits;
+
+        if (offset < 0) {
+            PyErr_SetString(PyExc_ValueError,
+                            "Negative padding before start of format.");
+            PyMem_RawFree(info_p);
+
+            return (NULL);
+        }
+
+        if (offset > extent) {
+            extent = offset;
+        }
     }
 
+    info_p->number_of_bits = extent;
+
     return (info_p);
+}
+
+static void pack_field(struct bitstream_writer_t *writer_p,
+                       PyObject *value_p,
+                       struct field_info_t *field_p)
+{
+    int first_idx;
+    int last_idx;
+    int length;
+    int start_bit;
+    int end_bit;
+    uint8_t *buf_p;
+    uint8_t old_first;
+    uint8_t old_last;
+    uint8_t first_mask;
+    uint8_t last_mask;
+
+    if (field_p->is_padding && (field_p->number_of_bits < 0)) {
+        /* deal with negative padding, i.e., go backwards */
+        bitstream_writer_seek(writer_p, field_p->number_of_bits);
+
+        return;
+    }
+
+    if (field_p->start_bit >= field_p->extent_before) {
+        /* append new data to the write buffer */
+        field_p->pack(writer_p, value_p, field_p);
+
+        return;
+    }
+
+    /* The current field starts before the end of the output stream. The
+     * buffer is already allocated (and zeroed) for the whole format.
+     * Overwrite already written bits for the current field while making
+     * sure to not overwrite data belonging to others.
+     */
+    start_bit = bitstream_writer_size_in_bits(writer_p);
+    end_bit = (start_bit + field_p->number_of_bits);
+    first_idx = (start_bit / 8);
+    last_idx = ((end_bit - 1) / 8);
+    length = (last_idx - first_idx + 1);
+
+    first_mask = (0xff >> (start_bit % 8));
+    last_mask = ((0xff00 >> (((end_bit - 1) % 8) + 1)) & 0xff);
+
+    buf_p = writer_p->buf_p;
+    old_first = buf_p[first_idx];
+    old_last = buf_p[last_idx];
+
+    memset(buf_p + first_idx, 0, length);
+    field_p->pack(writer_p, value_p, field_p);
+
+    /* restore the non-field bits of the first and last bytes affected
+     * by the current field */
+    buf_p[first_idx] = ((old_first & ~first_mask)
+                        | (buf_p[first_idx] & first_mask));
+    buf_p[last_idx] = ((old_last & ~last_mask)
+                       | (buf_p[last_idx] & last_mask));
 }
 
 static void pack_pack(struct info_t *info_p,
@@ -957,7 +1059,7 @@ static void pack_pack(struct info_t *info_p,
             consumed_args++;
         }
 
-        info_p->fields[i].pack(writer_p, value_p, field_p);
+        pack_field(writer_p, value_p, field_p);
     }
 }
 
@@ -970,6 +1072,10 @@ static PyObject *pack_prepare(struct info_t *info_p,
 
     if (packed_p == NULL) {
         return (NULL);
+    }
+
+    if (info_p->has_overlap) {
+        memset(PyBytes_AS_STRING(packed_p), 0, PyBytes_GET_SIZE(packed_p));
     }
 
     bitstream_writer_init(writer_p, (uint8_t *)PyBytes_AS_STRING(packed_p));
@@ -1048,7 +1154,6 @@ static PyObject *unpack(struct info_t *info_p,
     PyObject *value_p;
     Py_buffer view = {NULL, NULL};
     int i;
-    int tmp;
     int produced_args;
     int res;
     int allow_truncated;
@@ -1063,13 +1168,15 @@ static PyObject *unpack(struct info_t *info_p,
 
     if (allow_truncated) {
         num_result_fields = 0;
-        tmp = 0;
         for (i = 0; i < info_p->number_of_fields; i++) {
-            if (view.len*8 < tmp + info_p->fields[i].number_of_bits) {
+            if (view.len*8 < (info_p->fields[i].start_bit
+                              + info_p->fields[i].number_of_bits)) {
+                /* input is too short for full unpack. Note that this
+                 * discards all fields after negative padding even if
+                 * they would be inside the limits of the input data.
+                 */
                 break;
             }
-
-            tmp += info_p->fields[i].number_of_bits;
 
             if (!info_p->fields[i].is_padding) {
                 ++num_result_fields;
@@ -1399,7 +1506,7 @@ static void pack_dict_pack(struct info_t *info_p,
             }
         }
 
-        info_p->fields[i].pack(writer_p, value_p, field_p);
+        pack_field(writer_p, value_p, field_p);
     }
 }
 
@@ -1509,7 +1616,12 @@ static PyObject *unpack_dict(struct info_t *info_p,
     produced_args = 0;
 
     for (i = 0; i < info_p->number_of_fields; i++) {
-        if (view.len*8 < reader.bit_offset + info_p->fields[i].number_of_bits)
+        if (view.len*8 < (bitstream_reader_tell(&reader)
+                          + info_p->fields[i].number_of_bits))
+            /* input is too short to unpack the field. all following
+             * fields will be ignored even it they are in the bounds
+             * of the input data due to negative padding.
+             */
             break;
 
         value_p = info_p->fields[i].unpack(&reader, &info_p->fields[i]);
