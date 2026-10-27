@@ -497,24 +497,34 @@ class BitStructTest(unittest.TestCase):
         self.assertEqual(cf.unpack(b''), ())
         self.assertEqual(cf.unpack(b'\x00'), ())
 
-    def test_negative_padding(self):
-        self.assertEqual(pack('u8p-8u4u4', 0xab, 1, 2), b'\x12')
-        self.assertEqual(pack('u8p-4u8', 0xab, 0xcd), b'\xac\xd0')
-        self.assertEqual(pack('u16p-12u4p-3u3', 0xabcd, 0, 7), b'\xa7\xcd')
-        self.assertEqual(unpack('u8p-8u4u4', b'\xab'), (0xab, 0xa, 0xb))
-        self.assertEqual(unpack('u8P-4u8', b'\xab\xcd'), (0xab, 0xbc))
-        self.assertEqual(calcsize('u8p-8u4'), 8)
-        self.assertEqual(pack_dict('u8p-8u4', ['a', 'b'], {'a': 0x12, 'b': 0xf}),
+    def test_overlapping_fields(self):
+        self.assertEqual(pack('u8q8u4u4', 0xab, 1, 2), b'\x12')
+        self.assertEqual(pack('u8q4u8', 0xab, 0xcd), b'\xac\xd0')
+        self.assertEqual(pack('u16q12u4q3u3', 0xabcd, 0, 7), b'\xa7\xcd')
+        self.assertEqual(unpack('u8q8u4u4', b'\xab'), (0xab, 0xa, 0xb))
+        self.assertEqual(unpack('u8q4u8', b'\xab\xcd'), (0xab, 0xbc))
+        self.assertEqual(calcsize('u8q8u4'), 8)
+        self.assertEqual(pack_dict('u8q8u4', ['a', 'b'], {'a': 0x12, 'b': 0xf}),
                          b'\xf2')
-        self.assertEqual(unpack_dict('u8p-8u4', ['a', 'b'], b'\xab'),
+        self.assertEqual(unpack_dict('u8q8u4', ['a', 'b'], b'\xab'),
                          {'a': 0xab, 'b': 0xa})
 
         packed = bytearray(b'\xff\xff\xff')
-        pack_into('u8p-8u4', packed, 4, 0x12, 0xf)
+        pack_into('u8q8u4', packed, 4, 0x12, 0xf)
         self.assertEqual(packed, b'\xff\x2f\xff')
 
+        # Skipped bits are not zeroed.
+        self.assertEqual(pack('u8q4', 0xab), b'\xab')
+        self.assertEqual(pack('u8q4u2', 0xab, 1), b'\xa7')
+        packed = bytearray(b'\xff\xff\xff')
+        pack_into('u8q4', packed, 4, 0xab)
+        self.assertEqual(packed, b'\xfa\xbf\xff')
+
         with self.assertRaises(Exception):
-            pack('u8p-9', 1)
+            pack('u8q9', 1)
+
+        with self.assertRaises(Exception):
+            pack('u8p-8', 1)
 
         with self.assertRaises(Exception):
             pack('u8s-8', 1)

@@ -817,6 +817,12 @@ static int field_info_init(struct field_info_t *self_p,
         res = field_info_init_one_padding(self_p);
         break;
 
+    case 'q':
+        /* Move back number_of_bits bits. */
+        is_padding = true;
+        res = field_info_init_zero_padding(self_p);
+        break;
+
     default:
         PyErr_Format(PyExc_ValueError, "Bad format field type '%c'.", kind);
         res = -1;
@@ -841,7 +847,7 @@ static int count_number_of_fields(const char *format_p,
         if ((*format_p >= 'A') && (*format_p <= 'z')) {
             count++;
 
-            if ((*format_p == 'p') || (*format_p == 'P')) {
+            if ((*format_p == 'p') || (*format_p == 'P') || (*format_p == 'q')) {
                 (*number_of_padding_fields_p)++;
             }
         }
@@ -856,21 +862,13 @@ const char *parse_field(const char *format_p,
                         int *kind_p,
                         int *number_of_bits_p)
 {
-    bool is_negative;
-
     while (isspace(*format_p)) {
         format_p++;
     }
 
     *kind_p = *format_p;
     *number_of_bits_p = 0;
-    is_negative = false;
     format_p++;
-
-    if ((*format_p == '-') && ((*kind_p == 'p') || (*kind_p == 'P'))) {
-        is_negative = true;
-        format_p++;
-    }
 
     while (isdigit(*format_p)) {
         if (*number_of_bits_p > (INT_MAX / 100)) {
@@ -887,7 +885,7 @@ const char *parse_field(const char *format_p,
     if (*number_of_bits_p == 0) {
         PyErr_SetString(PyExc_ValueError, "Field of size 0.");
         format_p = NULL;
-    } else if (is_negative) {
+    } else if (*kind_p == 'q') {
         *number_of_bits_p = -*number_of_bits_p;
     }
 

@@ -170,7 +170,7 @@ def _parse_format(fmt, names, text_encoding, text_errors):
     else:
         byte_order = ''
 
-    parsed_infos = re.findall(r'([<>]?)([a-zA-Z])(-?\d+)(\s*)', fmt)
+    parsed_infos = re.findall(r'([<>]?)([a-zA-Z])(\d+)(\s*)', fmt)
 
     if ''.join([''.join(info) for info in parsed_infos]) != fmt:
         raise Error(f"bad format '{fmt + byte_order}'")
@@ -188,12 +188,12 @@ def _parse_format(fmt, names, text_encoding, text_errors):
         type_ = parsed_info[1]
         size = int(parsed_info[2])
 
-        if size == 0 or (size < 0 and type_ not in 'pP'):
+        if size == 0:
             raise Error(f"bad format '{fmt + byte_order}'")
 
         if names is None:
             name = i
-        elif type_ not in 'pP':
+        elif type_ not in 'pPq':
             name = names[i]
 
         if type_ == 's':
@@ -218,6 +218,8 @@ def _parse_format(fmt, names, text_encoding, text_errors):
             info = _ZeroPadding(size)
         elif type_ == 'P':
             info = _OnePadding(size)
+        elif type_ == 'q':
+            info = _ZeroPadding(-size)
         else:
             raise Error(f"bad char '{type_}' in format")
 
@@ -530,14 +532,14 @@ def pack(fmt, *args):
     - ``r`` -- raw, bytes
     - ``p`` -- padding with zeros, ignore
     - ``P`` -- padding with ones, ignore
+    - ``q`` -- move back, ignore
 
     Length is the number of bits to pack the value into.
 
-    Padding may have a negative length (``p-8``), which moves back
-    that many bits. Following fields then overlap the previous
-    bits; when packing they overwrite them. The size of the format is
-    the furthest bit position reached. Moving before the start of the
-    format is an error.
+    ``q`` moves back that many bits (``q8``). Following fields then
+    overlap the previous bits; when packing they overwrite them. The
+    size of the format is the furthest bit position reached. Moving
+    before the start of the format is an error.
 
     Example format string with default bit and byte ordering:
     ``'u1u3p7s16'``
