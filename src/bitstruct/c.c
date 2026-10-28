@@ -1032,10 +1032,17 @@ static void pack_field(struct bitstream_writer_t *writer_p,
 
     /* restore the non-field bits of the first and last bytes affected
      * by the current field */
-    buf_p[first_idx] = ((old_first & ~first_mask)
-                        | (buf_p[first_idx] & first_mask));
-    buf_p[last_idx] = ((old_last & ~last_mask)
-                       | (buf_p[last_idx] & last_mask));
+    if (first_idx == last_idx) {
+      first_mask |= last_mask;
+      buf_p[first_idx] = ((old_first & ~first_mask)
+			  | (buf_p[first_idx] & first_mask));
+    }
+    else {
+      buf_p[first_idx] = ((old_first & ~first_mask)
+			  | (buf_p[first_idx] & first_mask));
+      buf_p[last_idx] = ((old_last & ~last_mask)
+			 | (buf_p[last_idx] & last_mask));
+    }
 }
 
 static void pack_pack(struct info_t *info_p,

@@ -513,6 +513,10 @@ class BitStructTest(unittest.TestCase):
         pack_into('u8q8u4', packed, 4, 0x12, 0xf)
         self.assertEqual(packed, b'\xff\x2f\xff')
 
+        packed = bytearray(b'\xff\xff\xff')
+        pack_into('u8q4u8u4', packed, 0, 0, 0, 0)
+        self.assertEqual(packed, b'\x00\x00\xff')
+
         # Skipped bits are not zeroed.
         self.assertEqual(pack('u8q4', 0xab), b'\xab')
         self.assertEqual(pack('u8q4u2', 0xab, 1), b'\xa7')
